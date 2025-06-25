@@ -4,237 +4,243 @@ import sys
 import logging
 import os
 import queue
+import uuid
 from typing import Dict, Optional, List, Any
 
-# Import project modules
+# Proje modüllerini import et
 from buffer_manager import BufferManager
+# Not: MAVLinkHandlerCopter sınıfının projenizde olduğunu ve
+# gerekli metodları içerdiğini varsayıyoruz.
 from mavlink_handler.mavlink_handler_copter import MAVLinkHandlerCopter
 from socketio_connection import SocketIOConnection
+from operations.color_tracker import OperationColorTracker
 
-# Global instances (consider class structure later if complexity grows)
+# --- Global Değişkenler ---
 mav_copter: Optional[MAVLinkHandlerCopter] = None
 socket_client: Optional[SocketIOConnection] = None
 buffer: Optional[BufferManager] = None
 logger: Optional[logging.Logger] = None
 
-def setup_logging(log_level_str="INFO", log_file="mavlink_bridge.log"):
-    """Configures file and console logging."""
-    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
-    # More detailed format
-    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)-8s - %(message)s')
-    log_dir = os.path.dirname(log_file)
+# Operasyon yönetimi için global değişkenler
+active_operations: Dict[str, Any] = {}
+operation_output_queue = queue.Queue()
 
-    # Ensure log directory exists
+# Sunucudan gelen operasyon ismine göre hangi sınıfın başlatılacağını belirler
+OPERATION_MAP = {
+    "color_tracker": OperationColorTracker
+}
+# -----------------------------
+
+def setup_logging(log_level_str="INFO", log_file="mavlink_bridge.log"):
+    """Dosya ve konsol için loglama ayarlarını yapar."""
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
+    log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)-8s - %(message)s')
+    
+    log_dir = os.path.dirname(log_file)
     if log_dir and not os.path.exists(log_dir):
         try:
             os.makedirs(log_dir)
-            print(f"Created log directory: {log_dir}") # Use print before logging is fully setup
+            print(f"Log dizini oluşturuldu: {log_dir}")
         except OSError as e:
-            print(f"CRITICAL: Error creating log directory {log_dir}: {e}. Logging to current directory.", file=sys.stderr)
-            log_file = os.path.basename(log_file) # Fallback to current dir
+            print(f"KRİTİK: Log dizini oluşturulamadı {log_dir}: {e}. Loglar mevcut dizine yazılacak.", file=sys.stderr)
+            log_file = os.path.basename(log_file)
 
-    # Configure file handler
-    log_handler = logging.FileHandler(log_file, mode='a') # Append mode
+    log_handler = logging.FileHandler(log_file, mode='a')
     log_handler.setFormatter(log_formatter)
 
-    # Configure root logger
     root_logger = logging.getLogger()
-    if root_logger.hasHandlers(): # Avoid duplicate handlers if re-run in interactive session
-        print("Clearing existing log handlers.")
+    if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    root_logger.setLevel(log_level) # Set root level (e.g., DEBUG to capture all)
+    root_logger.setLevel(log_level)
     root_logger.addHandler(log_handler)
 
-    # Configure console handler (INFO level for user feedback)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_formatter)
-    # Set console level separately - INFO is usually good for console
     console_handler.setLevel(logging.INFO)
     root_logger.addHandler(console_handler)
 
-    # Get logger instance for the main module
     logger_instance = logging.getLogger(__name__)
-    logger_instance.info(f"Logging configured. Level: {log_level_str}, File: '{log_file}'")
-    return logger_instance # Return the specific logger
+    logger_instance.info(f"Loglama ayarlandı. Seviye: {log_level_str}, Dosya: '{log_file}'")
+    return logger_instance
 
 def parse_args():
-    """Parses command-line arguments."""
+    """Komut satırı argümanlarını ayrıştırır."""
     parser = argparse.ArgumentParser(description='MAVLink to WebSocket Bridge')
-    # Server settings
-    parser.add_argument('--srv-ptc', default='http', help='WebSocket server protocol (http/https)')
-    parser.add_argument('--srv-host', default='localhost', help='WebSocket server host')
-    parser.add_argument('--srv-port', default='3000', help='WebSocket server port')
-    parser.add_argument('--srv-token', default='bridge', help='WebSocket server token (optional)')
-    # MAVLink settings
-    parser.add_argument('--mv-url', default='udp:localhost:14550', help='MAVLink connection URL (e.g., udp:ip:port, /dev/ttyUSB0:baud)')
-    parser.add_argument('--mv-source-system', default=255, type=int, help='MAVLink source system ID for this bridge')
-    # Buffer settings
-    parser.add_argument('--buffer-size', default=50, type=int, help='Max messages in buffer before flush')
-    parser.add_argument('--flush-timeout', default=1.0, type=float, help='Max seconds between messages before flush (reduced default)')
-    # Logging settings
-    parser.add_argument('--log-file', default='mavlink_bridge.log', help='Path to log file')
-    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Logging level for file')
-    # Configuration settings
-    parser.add_argument('--socket-check-interval', default=5.0, type=float, help='Socket.IO connection check interval (s)')
-    parser.add_argument('--socket-max-disconnect', default=30.0, type=float, help='Max Socket.IO disconnect duration before exit (s)')
-    parser.add_argument('--loop-sleep', default=0.01, type=float, help='Main loop sleep duration (s)')
-
+    # Sunucu ayarları
+    parser.add_argument('--srv-ptc', default='http', help='WebSocket sunucu protokolü (http/https)')
+    parser.add_argument('--srv-host', default='localhost', help='WebSocket sunucu adresi')
+    parser.add_argument('--srv-port', default='3000', help='WebSocket sunucu portu')
+    parser.add_argument('--srv-token', default='bridge', help='WebSocket sunucu tokeni (opsiyonel)')
+    # MAVLink ayarları
+    parser.add_argument('--mv-url', default='udp:localhost:14550', help='MAVLink bağlantı adresi (örn: udp:ip:port, /dev/ttyUSB0:baud)')
+    parser.add_argument('--mv-source-system', default=255, type=int, help='Bu köprünün MAVLink kaynak sistem IDsi')
+    # Buffer ayarları
+    parser.add_argument('--buffer-size', default=50, type=int, help='Flush öncesi tampondaki maksimum mesaj sayısı')
+    parser.add_argument('--flush-timeout', default=1.0, type=float, help='Flush öncesi mesajlar arasındaki maksimum süre (saniye)')
+    # Loglama ayarları
+    parser.add_argument('--log-file', default='mavlink_bridge.log', help='Log dosyasının yolu')
+    parser.add_argument('--log-level', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], help='Dosya için loglama seviyesi')
+    # Yapılandırma ayarları
+    parser.add_argument('--socket-check-interval', default=5.0, type=float, help='Socket.IO bağlantı kontrol aralığı (s)')
+    parser.add_argument('--socket-max-disconnect', default=30.0, type=float, help='Çıkış öncesi maksimum Socket.IO bağlantı kopukluğu süresi (s)')
+    parser.add_argument('--loop-sleep', default=0.01, type=float, help='Ana döngü bekleme süresi (s)')
     return parser.parse_args()
 
-# --- Callback Functions ---
-def handle_mavlink_command(data: Dict[str, Any]) -> int: # Return type updated
-    """Callback for forwarding immediate commands from Socket.IO."""
-    global mav_copter, logger
-    if mav_copter:
-        return mav_copter.send_command(data) # Call the command method which returns 1, 2, or False
-    if logger:
-        logger.error("Cannot forward command: MAVLink connection unavailable.")
-    return False # Return False if connection unavailable
+# --- Callback Fonksiyonları ---
+def handle_mavlink_command(data: Dict[str, Any]) -> int:
+    """MAVLink komut isteklerini işler."""
+    if mav_copter: return mav_copter.send_command(data)
+    logger.error("MAVLink bağlantısı yokken komut işlenemiyor.")
+    return False
 
 def handle_mavlink_mission_download() -> Optional[List[Dict[str, Any]]]:
-    """Callback for triggering mission download from Socket.IO."""
-    global mav_copter, logger
-    if mav_copter:
-        return mav_copter.mission_get()
-    if logger:
-        logger.error("Cannot download mission: MAVLink connection unavailable.")
+    """MAVLink görev indirme isteklerini işler."""
+    if mav_copter: return mav_copter.mission_get()
+    logger.error("MAVLink bağlantısı yokken görev indirilemiyor.")
     return None
 
 def handle_mavlink_mission_upload(items: List[Dict[str, Any]]) -> bool:
-    """Callback for triggering mission upload from Socket.IO."""
-    global mav_copter, logger
-    if mav_copter:
-        return mav_copter.mission_set(items)
-    if logger:
-        logger.error("Cannot upload mission: MAVLink connection unavailable.")
+    """MAVLink görev yükleme isteklerini işler."""
+    if mav_copter: return mav_copter.mission_set(items)
+    logger.error("MAVLink bağlantısı yokken görev yüklenemiyor.")
     return False
 
-# --- Main Execution ---
+def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Socket.IO'dan gelen operasyon başlatma isteğini işler ve durum döndürür."""
+    op_name = data.get("operation_name")
+    params = data.get("params", {})
+    op_id = str(uuid.uuid4())
+    logger.info(f"'{op_name}' operasyonunu başlatma isteği alındı (ID: {op_id}).")
 
+    OperationClass = OPERATION_MAP.get(op_name)
+    if not OperationClass:
+        logger.warning(f"Bilinmeyen operasyon isteği: {op_name}")
+        return {'success': False, 'id': op_id, 'error': f'Unknown operation: {op_name}'}
+
+    if not mav_copter or not mav_copter.is_connected():
+        logger.error(f"'{op_name}' başlatılamıyor: MAVLink bağlantısı yok.")
+        return {'success': False, 'id': op_id, 'error': 'MAVLink connection not available.'}
+
+    try:
+        operation_instance = OperationClass(mav_copter, operation_output_queue, params, logger)
+        if operation_instance.start():
+            active_operations[op_id] = operation_instance
+            logger.info(f"'{op_name}' operasyonu (ID: {op_id}) başarıyla başlatıldı.")
+            return {'success': True, 'id': op_id}
+        else:
+            logger.error(f"'{op_name}' operasyonu (ID: {op_id}) başlatılamadı (start metodu False döndü).")
+            return {'success': False, 'id': op_id, 'error': 'Operation failed to start.'}
+    except Exception as e:
+        logger.error(f"'{op_name}' operasyonu başlatılırken istisna oluştu: {e}", exc_info=True)
+        return {'success': False, 'id': op_id, 'error': f'Internal bridge error: {e}'}
+
+def handle_stop_operation(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Socket.IO'dan gelen operasyon durdurma isteğini işler ve durum döndürür."""
+    op_id = data.get("operation_id")
+    logger.info(f"Operasyon durdurma isteği alındı (ID: {op_id}).")
+
+    operation_instance = active_operations.get(op_id)
+    if not operation_instance:
+        logger.warning(f"Durdurulmak istenen operasyon bulunamadı (ID: {op_id}).")
+        return {'success': False, 'id': op_id, 'error': 'Operation ID not found.'}
+
+    try:
+        operation_instance.stop()
+        del active_operations[op_id]
+        logger.info(f"Operasyon (ID: {op_id}) başarıyla durduruldu ve listeden kaldırıldı.")
+        return {'success': True, 'id': op_id}
+    except Exception as e:
+        logger.error(f"Operasyon (ID: {op_id}) durdurulurken istisna oluştu: {e}", exc_info=True)
+        return {'success': False, 'id': op_id, 'error': f'Internal bridge error: {e}'}
+
+# --- Ana Program ---
 def main():
-    """Initializes components and runs the main application loop."""
-    global mav_copter, socket_client, buffer, logger # Declare globals used
+    global mav_copter, socket_client, buffer, logger
 
     args = parse_args()
     logger = setup_logging(log_level_str=args.log_level, log_file=args.log_file)
-    logger.info("--- MAVLink Bridge Starting ---")
-    logger.debug(f"Arguments: {vars(args)}") # Log args at debug level
-
-    # Configuration from arguments
-    server_protocol = args.srv_ptc
-    server_host = args.srv_host
-    server_port = args.srv_port
-    server_token = args.srv_token
-    SERVER_URL = f'{server_protocol}://{server_host}:{server_port}?user={server_token}'
-
-    MAVLINK_URL = args.mv_url
-    BUFFER_SIZE = args.buffer_size
-    FLUSH_TIMEOUT = args.flush_timeout
-    MAVLINK_SOURCE_SYSTEM = args.mv_source_system
-    LOOP_SLEEP_DURATION = args.loop_sleep
+    logger.info("--- MAVLink Köprüsü Başlatılıyor ---")
+    logger.debug(f"Argümanlar: {vars(args)}")
+    
+    SERVER_URL = f'{args.srv_ptc}://{args.srv_host}:{args.srv_port}?user={args.srv_token}'
 
     try:
-        # Initialize MAVLink Connection
-        logger.info("Initializing MAVLink connection...")
-        mav_copter = MAVLinkHandlerCopter(MAVLINK_URL, source_system=MAVLINK_SOURCE_SYSTEM, logger=logger)
-        logger.info("MAVLink connection initialization attempted.")
+        logger.info("MAVLink bağlantısı başlatılıyor...")
+        mav_copter = MAVLinkHandlerCopter(args.mv_url, source_system=args.mv_source_system, logger=logger)
 
-        # Initialize Socket.IO Connection using appropriate handlers
-        logger.info("Initializing Socket.IO connection...")
+        logger.info("Socket.IO bağlantısı başlatılıyor...")
         socket_client = SocketIOConnection(
             server_url=SERVER_URL,
             handler_command=handle_mavlink_command,
             handler_mission_download=handle_mavlink_mission_download,
             handler_mission_upload=handle_mavlink_mission_upload,
+            handler_start_operation=handle_start_operation,
+            handler_stop_operation=handle_stop_operation,
             logger=logger,
             check_interval=args.socket_check_interval,
             max_disconnect_time=args.socket_max_disconnect
         )
 
-        # Attempt Socket.IO connection
         if not socket_client.connect():
-            logger.critical("Initial Socket.IO connection failed. Exiting.")
-            if mav_copter: mav_copter.close() # Attempt cleanup
+            logger.critical("Socket.IO bağlantısı kurulamadı. Çıkılıyor.")
+            if mav_copter: mav_copter.close()
             sys.exit(1)
-        logger.info("Socket.IO connection established.")
+        
+        logger.info("Buffer Yöneticisi başlatılıyor...")
+        buffer = BufferManager(buffer_size=args.buffer_size, flush_timeout=args.flush_timeout, logger=logger)
 
-        # Initialize Buffer Manager
-        logger.info("Initializing Buffer Manager...")
-        buffer = BufferManager(BUFFER_SIZE, FLUSH_TIMEOUT, logger=logger)
-        logger.info("Buffer Manager initialized.")
-
-    except ConnectionError as e:
-        logger.critical(f"Fatal Initialization Error (MAVLink): {str(e)}")
-        if socket_client: socket_client.disconnect()
-        if mav_copter: mav_copter.close()
-        sys.exit(1)
     except Exception as e:
-        logger.critical(f"Fatal Initialization Error: {str(e)}", exc_info=True)
+        logger.critical(f"Başlatma sırasında kritik hata: {e}", exc_info=True)
         if socket_client: socket_client.disconnect()
         if mav_copter: mav_copter.close()
         sys.exit(1)
 
-    # --- Main application loop ---
-    logger.info("Starting main application loop...")
-
+    logger.info("--- Ana uygulama döngüsü başlatıldı ---")
     while True:
         try:
-            # 1. Check for permanent MAVLink failure signaled by receiver thread
             if mav_copter and mav_copter.connection_failed_permanently:
-                logger.critical("Fatal: MAVLink connection failed permanently. Exiting.")
-                if socket_client: socket_client.disconnect()
-                sys.exit(1)
+                logger.critical("MAVLink bağlantısı kalıcı olarak koptu. Çıkılıyor.")
+                break
 
-            # 2. Process general messages from MAVLink receiver queue (non-blocking)
             if mav_copter:
                 try:
                     msg = mav_copter.received_messages.get_nowait()
-                    if msg and buffer:
-                        if buffer.add_message(msg):
-                            if socket_client: socket_client.flush_buffer(buffer)
+                    if msg and buffer.add_message(msg):
+                        if socket_client: socket_client.flush_buffer(buffer)
                 except queue.Empty:
-                    pass # No message
-                except Exception as q_err:
-                    logger.error(f"Error getting message from MAVLink general queue: {q_err}", exc_info=True)
+                    pass
 
-            # 3. Check buffer timeout
             if buffer and buffer.check_timeout():
                 if socket_client: socket_client.flush_buffer(buffer)
 
-            # 4. Check for persistent Socket.IO disconnection
-            if socket_client and not socket_client.check_persistent_disconnect():
-                logger.critical("Exiting due to persistent Socket.IO disconnection.")
-                if mav_copter: mav_copter.close()
-                sys.exit(1)
+            try:
+                op_result = operation_output_queue.get_nowait()
+                if socket_client:
+                    socket_client.emit_status('operation_result', op_result)
+            except queue.Empty:
+                pass
 
-            # Sleep briefly
-            time.sleep(LOOP_SLEEP_DURATION)
-
-        except (OSError, BrokenPipeError, AttributeError) as e:
-            logger.error(f"Communication or attribute error in main loop: {str(e)}. Checking connections.", exc_info=True)
-            if not mav_copter or mav_copter.connection_failed_permanently:
-                logger.warning("MAVLink connection appears down in main loop check.")
-            if not socket_client or not socket_client.client.connected:
-                logger.warning("Socket.IO connection appears down in main loop check.")
-            time.sleep(1)
+            if not socket_client.check_persistent_disconnect():
+                logger.critical("Socket.IO bağlantısı kalıcı olarak koptu. Çıkılıyor.")
+                break
+            
+            time.sleep(args.loop_sleep)
 
         except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt received. Exiting gracefully...")
+            logger.info("Kullanıcı tarafından durduruldu (KeyboardInterrupt). Çıkılıyor...")
             break
-
         except Exception as e:
-            logger.error(f"Unexpected error in main loop: {str(e)}", exc_info=True)
-            time.sleep(0.5)
+            logger.error(f"Ana döngüde beklenmedik hata: {e}", exc_info=True)
+            time.sleep(1)
 
-    # --- Cleanup phase ---
-    logger.info("Shutting down...")
-    if socket_client:
-        socket_client.disconnect()
-    if mav_copter:
-        mav_copter.close()
-
-    logger.info("--- MAVLink Bridge Stopped ---")
+    logger.info("Kapanış prosedürü başlatılıyor...")
+    for op_id, op_instance in list(active_operations.items()):
+        logger.info(f"Çalışan operasyon durduruluyor: {op_id}")
+        op_instance.stop()
+    if socket_client: socket_client.disconnect()
+    if mav_copter: mav_copter.close()
+    logger.info("--- MAVLink Köprüsü Durduruldu ---")
     sys.exit(0)
 
 if __name__ == "__main__":
