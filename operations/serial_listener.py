@@ -83,7 +83,7 @@ class OperationSerialListener:
             pairs = line.split(',')
             for pair in pairs:
                 if '=' in pair:
-                    key, value = pair.split('=', 1)
+                    key, value = pair.split(':', 1)
                     data_dict[key.strip()] = value.strip()
 
             # Temel doğrulama: 'type' anahtarı zorunlu

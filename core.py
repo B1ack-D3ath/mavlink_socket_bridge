@@ -237,8 +237,8 @@ def main():
                 if socket_client: socket_client.flush_buffer(buffer)
             
             try:
-                op_result = operation_output_queue.get_nowait()
-                if socket_client: socket_client.emit_status('operation_result', op_result)
+                status_op = operation_output_queue.get_nowait()
+                if socket_client: socket_client.emit_status('status_operation', status_op)
             
             except queue.Empty: pass
             if not socket_client.check_persistent_disconnect(): break
