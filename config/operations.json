@@ -1,0 +1,4 @@
+{
+  "color_tracker": "operations.color_tracker.OperationColorTracker",
+  "serial_listener": "operations.serial_listener.OperationSerialListener"
+}
