@@ -117,7 +117,7 @@ def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
     
     op_name = data.get("operation_name")
     params = data.get("params", {})
-    op_id = str(uuid.uuid4())
+    op_id = data.get("id", "None")
     logger.info(f"'{op_name}' operasyonunu başlatma isteği alındı (ID: {op_id}).")
     
     class_path = OPERATION_MAP.get(op_name)
@@ -133,7 +133,7 @@ def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
         return {'success': False, 'id': op_id, 'error': 'MAVLink connection not available.'}
     
     try:
-        operation_instance = OperationClass(mav_copter, operation_output_queue, params, logger)
+        operation_instance = OperationClass(mav_copter, op_id, operation_output_queue, params, logger)
         if operation_instance.start():
             active_operations[op_id] = operation_instance
             return {'success': True, 'id': op_id}
@@ -147,7 +147,7 @@ def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
 def handle_stop_operation(data: Dict[str, Any]) -> Dict[str, Any]:
     """Socket.IO'dan gelen operasyon durdurma isteğini işler."""
     
-    op_id = data.get("operation_id")
+    op_id = data.get("id")
     operation_instance = active_operations.get(op_id)
     
     if not operation_instance:

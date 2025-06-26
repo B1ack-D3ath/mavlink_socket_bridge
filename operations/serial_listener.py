@@ -15,6 +15,7 @@ class OperationSerialListener:
     def __init__(self,
                  mav_handler, # Not: Bu operasyon MAVLink'i kullanmaz, ancak standart yapı için parametre olarak alınır.
                  output_queue: Queue,
+                 id: Any,
                  params: Dict[str, Any],
                  logger: logging.Logger):
         """
@@ -27,6 +28,7 @@ class OperationSerialListener:
             logger (logging.Logger): The logger instance.
         """
         self.output_queue = output_queue
+        self.id = id
         self.params = params
         self.logger = logger
         self.is_running = False
@@ -122,6 +124,7 @@ class OperationSerialListener:
                         report = {
                             "type": "external_data",      # Sunucunun bu veriyi tanıması için genel tip
                             "operation_type": "serial_listener", # Verinin hangi operasyondan geldiği
+                            "operation_id": self.id,
                             "timestamp": time.time(),
                             "payload": parsed_data        # Ayrıştırılmış asıl veri
                         }

@@ -165,92 +165,125 @@ class SocketIOConnection:
     def _on_request_command(self, data):
         """Handles 'request_command' event from the server."""
         event_name = 'response_command'
-        if not self.handler_command:
+        event_id = data.get('id','None')
+        event_data = data.get('items', None)
+        
+        if not event_data:
+            self.logger.warning("Received 'request_command' but no have 'items'.")
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Request does not have items'})
+            return
+        
+        elif not self.handler_command:
             self.logger.warning("Received 'request_command' but no handler_command configured.")
-            self.emit_response(event_name, {'success': False, 'error': 'Bridge command handler not configured'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Bridge command handler not configured'})
             return
         
         try:
-            success_code = self.handler_command(data)
-            if success_code == 1: self.emit_response(event_name, {'success': True, 'list': False})
-            elif success_code == 2: self.emit_response(event_name, {'success': True, 'list': True})
-            else: self.emit_response(event_name, {'success': False, 'error': 'Command processing failed on bridge/vehicle'})
+            if self.handler_command(event_data): self.emit_response(event_name, {'success': True, 'id': event_id})
+            else: self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Command processing failed on bridge/vehicle'})
         
         except Exception as e:
             self.logger.error(f"Error occurred during command request processing: {str(e)}", exc_info=True)
-            self.emit_response(event_name, {'success': False, 'error': f'Internal bridge error: {str(e)}'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Internal bridge error: {str(e)}'})
 
     def _on_request_mission_download(self, data):
         """Handles 'request_mission_download' event from the server."""
         event_name = 'response_mission_download'
+        event_id = data.get('id','None')
+        
         if not self.handler_mission_download:
             self.logger.warning("Received 'request_mission_download' but no handler configured.")
-            self.emit_response(event_name, {'success': False, 'error': 'Bridge download handler not configured'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Bridge download handler not configured'})
             return
         
         try:
             mission_list = self.handler_mission_download()
-            if mission_list is not None: self.emit_response(event_name, {'success': True, 'items': mission_list})
-            else: self.emit_response(event_name, {'success': False, 'error': 'Mission download failed on bridge/vehicle'})
+            if mission_list: self.emit_response(event_name, {'success': True, 'id': event_id, 'items': mission_list})
+            else: self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Mission download failed on bridge/vehicle'})
         
         except Exception as e:
             self.logger.error(f"Error occurred during mission download request: {str(e)}", exc_info=True)
-            self.emit_response(event_name, {'success': False, 'error': f'Internal bridge error: {str(e)}'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Internal bridge error: {str(e)}'})
 
     def _on_request_mission_upload(self, data):
         """Handles 'request_mission_upload' event from the server."""
         event_name = 'response_mission_upload'
-        if not self.handler_mission_upload:
-            self.logger.warning("Received 'request_mission_upload' but no handler configured.")
-            self.emit_response(event_name, {'success': False, 'error': 'Bridge upload handler not configured'})
+        event_id = data.get('id','None')
+        event_data = data.get('items', None)
+        
+        if not event_data:
+            self.logger.warning("Received 'request_mission_upload' but no have 'items'.")
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Request does not have items'})
             return
         
-        if not isinstance(data, list):
-            self.emit_response(event_name, {'success': False, 'error': f'Invalid data format: Expected list'})
+        elif not self.handler_mission_upload:
+            self.logger.warning("Received 'request_mission_upload' but no handler configured.")
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Bridge upload handler not configured'})
+            return
+        
+        elif not isinstance(event_data, list):
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Invalid data format: Expected list'})
             return
         
         try:
-            success = self.handler_mission_upload(data)
-            if success: self.emit_response(event_name, {'success': True})
-            else: self.emit_response(event_name, {'success': False, 'error': 'Mission upload failed on bridge/vehicle'})
+            if self.handler_mission_upload(event_data): self.emit_response(event_name, {'success': True, 'id': event_id})
+            else: self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Mission upload failed on bridge/vehicle'})
         
         except Exception as e:
             self.logger.error(f"Error occurred during mission upload request: {str(e)}", exc_info=True)
-            self.emit_response(event_name, {'success': False, 'error': f'Internal bridge error: {str(e)}'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Internal bridge error: {str(e)}'})
 
     def _on_request_start_operation(self, data):
         """Handles 'request_start_operation' event from the server."""
         event_name = 'response_start_operation'
+        event_id = data.get('id','None')
+        event_data = data.get('items', None)
+        
+        if not event_data:
+            self.logger.warning("Received 'request_start_operation' but no have 'items'.")
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Request does not have items'})
+            return
+        
         if not self.handler_start_operation:
             self.logger.warning("Received 'request_start_operation' but no handler configured.")
-            self.emit_response(event_name, {'success': False, 'error': 'Bridge start_operation handler not configured'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Bridge start_operation handler not configured'})
             return
         
         try:
             response_dict = self.handler_start_operation(data)
+            response_dict['id'] = event_id
             if isinstance(response_dict, dict): self.emit_response(event_name, response_dict)
             else: self.logger.error("Operation start handler did not return a dictionary.")
         
         except Exception as e:
             self.logger.error(f"Error during start_operation request processing: {e}", exc_info=True)
-            self.emit_response(event_name, {'success': False, 'error': f'Internal bridge error: {e}'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Internal bridge error: {e}'})
 
     def _on_request_stop_operation(self, data):
         """Handles 'request_stop_operation' event from the server."""
         event_name = 'response_stop_operation'
+        event_id = data.get('id','None')
+        event_data = data.get('items', None)
+        
+        if not event_data:
+            self.logger.warning("Received 'request_stop_operation' but no have 'items'.")
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Request does not have items'})
+            return
+        
         if not self.handler_stop_operation:
             self.logger.warning("Received 'request_stop_operation' but no handler configured.")
-            self.emit_response(event_name, {'success': False, 'error': 'Bridge stop_operation handler not configured'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': 'Bridge stop_operation handler not configured'})
             return
         
         try:
             response_dict = self.handler_stop_operation(data)
+            response_dict['id'] = event_id
             if isinstance(response_dict, dict): self.emit_response(event_name, response_dict)
             else: self.logger.error("Operation stop handler did not return a dictionary.")
         
         except Exception as e:
             self.logger.error(f"Error during stop_operation request processing: {e}", exc_info=True)
-            self.emit_response(event_name, {'success': False, 'error': f'Internal bridge error: {e}'})
+            self.emit_response(event_name, {'success': False, 'id': event_id, 'error': f'Internal bridge error: {e}'})
 
     # --- Buffer Flushing ---
     def flush_buffer(self, buffer_manager) -> bool:

@@ -35,9 +35,10 @@ class Target:
 
 class TargetManager:
     """Tespit edilen tüm hedefleri yöneten, güncelleyen ve raporlayan sınıf."""
-    def __init__(self, output_queue: Queue, confirmation_frames: int, pixel_threshold: int, unseen_threshold: int):
+    def __init__(self, output_queue: Queue, op_id: Any, confirmation_frames: int, pixel_threshold: int, unseen_threshold: int):
         self.targets = []
         self.output_queue = output_queue  # Sonuçları ana programa (core.py) göndermek için
+        self.op_id = op_id
         self.confirmation_frames = confirmation_frames
         self.pixel_distance_threshold = pixel_threshold
         self.unseen_frames_threshold = unseen_threshold
@@ -80,7 +81,8 @@ class TargetManager:
                 result_data = {
                     "type": "target_detected",
                     "operation_type": "color_tracker",
-                    "id": str(target.id),
+                    "operation_id": self.op_id,
+                    "target_id": str(target.id),
                     "lat": lat,
                     "lon": lon,
                     "timestamp": time.time()
@@ -156,7 +158,7 @@ def calculate_target_gps(frame_shape: tuple, target_pixel: tuple, telemetry: Dic
 
 # --- Ana Operasyon Sınıfı ---
 class OperationColorTracker:
-    def __init__(self, mav_handler, output_queue: Queue, params: Dict[str, Any], logger: logging.Logger):
+    def __init__(self, mav_handler, output_queue: Queue, id: Any, params: Dict[str, Any], logger: logging.Logger):
         """
         Renk takibi operasyonunu yöneten sınıf.
 
@@ -168,6 +170,7 @@ class OperationColorTracker:
         """
         self.mav_handler = mav_handler
         self.output_queue = output_queue
+        self.id = id
         self.params = params
         self.logger = logger
         self.is_running = False
@@ -181,6 +184,7 @@ class OperationColorTracker:
         
         self.target_manager = TargetManager(
             output_queue=self.output_queue,
+            op_id=self.id,
             confirmation_frames=self.params.get("confirmation_frames", 10),
             pixel_threshold=self.params.get("pixel_distance_threshold", 100),
             unseen_threshold=self.params.get("unseen_frames_threshold", 50)
