@@ -250,7 +250,7 @@ class SocketIOConnection:
             return
         
         try:
-            response_dict = self.handler_start_operation(data)
+            response_dict = self.handler_start_operation(event_data)
             response_dict['id'] = event_id
             if isinstance(response_dict, dict): self.emit_response(event_name, response_dict)
             else: self.logger.error("Operation start handler did not return a dictionary.")
@@ -276,7 +276,7 @@ class SocketIOConnection:
             return
         
         try:
-            response_dict = self.handler_stop_operation(data)
+            response_dict = self.handler_stop_operation(event_data)
             response_dict['id'] = event_id
             if isinstance(response_dict, dict): self.emit_response(event_name, response_dict)
             else: self.logger.error("Operation stop handler did not return a dictionary.")
