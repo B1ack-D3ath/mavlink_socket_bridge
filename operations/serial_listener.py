@@ -84,7 +84,7 @@ class OperationSerialListener:
             data_dict = {}
             pairs = line.split(',')
             for pair in pairs:
-                if '=' in pair:
+                if ':' in pair:
                     key, value = pair.split(':', 1)
                     data_dict[key.strip()] = value.strip()
 
