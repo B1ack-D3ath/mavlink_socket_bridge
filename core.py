@@ -133,7 +133,7 @@ def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
         return {'success': False, 'id': op_id, 'error': 'MAVLink connection not available.'}
     
     try:
-        operation_instance = OperationClass(mav_copter, op_id, operation_output_queue, params, logger)
+        operation_instance = OperationClass(mav_copter, operation_output_queue, op_id, params, logger)
         if operation_instance.start():
             active_operations[op_id] = operation_instance
             return {'success': True, 'id': op_id}
