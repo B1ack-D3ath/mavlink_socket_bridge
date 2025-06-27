@@ -129,7 +129,7 @@ def handle_start_operation(data: Dict[str, Any]) -> Dict[str, Any]:
     if not OperationClass:
         return {'success': False, 'id': op_id, 'error': f'Operation class not found at {class_path}'}
     
-    if not mav_copter or not mav_copter.is_connected():
+    if not mav_copter or not mav_copter.is_ready():
         return {'success': False, 'id': op_id, 'error': 'MAVLink connection not available.'}
     
     try:
