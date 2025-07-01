@@ -48,7 +48,7 @@ class SocketIOConnection:
 
         self.client = socketio.Client(
             reconnection=True,
-            reconnection_attempts=-1,
+            reconnection_attempts=10,
             reconnection_delay=1,
             reconnection_delay_max=5
         )
