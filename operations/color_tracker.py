@@ -1,4 +1,5 @@
-# Bu dosya, projenizin ana dizininde 'operations' adlı yeni bir klasör içinde yer almalıdır.
+# Bu dosya, projenizin ana dizininde 'operations' adlı klasör içinde yer almalıdır.
+# operation_01.py dosyasındaki Raspberry Pi için optimize edilmiş mantığı kullanır.
 
 import cv2
 import threading
@@ -6,13 +7,11 @@ import numpy as np
 import math
 import time
 import uuid
-from queue import Queue
 import logging
-from typing import Dict, Any
+from queue import Queue
+from typing import Dict, Any, Optional
 
-# --- Hedef Yönetim Sistemi ---
-# operation_01.py'den alınan Target ve TargetManager sınıfları,
-# dışarıdan kontrol edilebilir ve modüler bir yapıya uyarlandı.
+# --- Hedef Yönetim Sınıfları (operation_01.py'den uyarlandı) ---
 
 class Target:
     """Tek bir hedefi temsil eden sınıf."""
@@ -35,22 +34,19 @@ class Target:
 
 class TargetManager:
     """Tespit edilen tüm hedefleri yöneten, güncelleyen ve raporlayan sınıf."""
-    def __init__(self, output_queue: Queue, op_id: Any, confirmation_frames: int, pixel_threshold: int, unseen_threshold: int):
+    def __init__(self, output_queue: Queue, config: Dict[str, Any]):
         self.targets = []
-        self.output_queue = output_queue  # Sonuçları ana programa (core.py) göndermek için
-        self.op_id = op_id
-        self.confirmation_frames = confirmation_frames
-        self.pixel_distance_threshold = pixel_threshold
-        self.unseen_frames_threshold = unseen_threshold
+        self.output_queue = output_queue
+        self.config = config
 
-    def find_closest_target(self, pixel_coords: tuple) -> Target | None:
+    def find_closest_target(self, pixel_coords: tuple) -> Optional[Target]:
         """Verilen piksel koordinatlarına eşik mesafesi içindeki en yakın hedefi bulur."""
         closest_target = None
         min_dist = float('inf')
         for target in self.targets:
             dist = math.hypot(pixel_coords[0] - target.last_pixel_coords[0], 
                               pixel_coords[1] - target.last_pixel_coords[1])
-            if dist < self.pixel_distance_threshold and dist < min_dist:
+            if dist < self.config['pixel_threshold'] and dist < min_dist:
                 min_dist = dist
                 closest_target = target
         return closest_target
@@ -60,7 +56,7 @@ class TargetManager:
         updated_targets_in_frame = set()
         
         for pixel in new_detections:
-            gps = calculate_target_gps(frame_shape, pixel, mav_telemetry)
+            gps = calculate_target_gps(frame_shape, pixel, mav_telemetry, self.config)
             if not gps: 
                 continue
 
@@ -69,85 +65,106 @@ class TargetManager:
                 closest.update(pixel, gps)
                 updated_targets_in_frame.add(closest.id)
             else:
-                self.targets.append(Target(pixel, gps, self.confirmation_frames))
+                self.targets.append(Target(pixel, gps, self.config['confirmation_frames']))
 
         for target in self.targets:
             if target.id not in updated_targets_in_frame:
                 target.frames_unseen += 1
             
-            # Hedef yeterince görüldüyse ve henüz raporlanmadıysa, sonucu kuyruğa ekle
-            if not target.is_reported and target.confirmation_counter >= self.confirmation_frames:
+            if not target.is_reported and target.confirmation_counter >= self.config['confirmation_frames']:
                 lat, lon = target.gps_coords
-                result_data = {
+                # Sonucu seri port yerine output_queue'ya koy
+                report = {
                     "type": "target_detected",
                     "operation_type": "color_tracker",
-                    "operation_id": self.op_id,
-                    "target_id": str(target.id),
+                    "id": str(target.id),
                     "lat": lat,
                     "lon": lon,
                     "timestamp": time.time()
                 }
-                self.output_queue.put(result_data)
+                self.output_queue.put(report)
                 target.is_reported = True
         
-        # Uzun süre görülmeyen hedefleri listeden temizle
-        self.targets = [t for t in self.targets if t.frames_unseen < self.unseen_frames_threshold]
+        self.targets = [t for t in self.targets if t.frames_unseen < self.config['unseen_threshold']]
 
 
-# --- Görüntü İşleme ve Hesaplama Fonksiyonları ---
+# --- Görüntü İşleme ve Hesaplama Fonksiyonları (operation_01.py'den uyarlandı) ---
 
-def detect_all_color_targets(frame: np.ndarray, hsv_lower: np.ndarray, hsv_upper: np.ndarray, min_contour_area: int) -> list:
-    """Görüntüdeki belirtilen renkteki tüm hedefleri bulur ve merkezlerinin piksel koordinatlarını döndürür."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
-    mask = cv2.erode(mask, None, iterations=2)
-    mask = cv2.dilate(mask, None, iterations=2)
+def detect_all_color_targets(frame: np.ndarray, config: Dict[str, Any]) -> list:
+    """
+    Bir görüntüdeki hedefleri, Raspberry Pi için optimize edilmiş 
+    "Hibrit Filtreleme" yöntemiyle bulur.
+    """
+    original_height, original_width = frame.shape[:2]
+    if original_width == 0: return []
+    
+    # 1. PERFORMANS ARTIŞI: Görüntüyü Küçültme
+    scale_ratio = original_width / config['resize_width']
+    new_height = int(original_height / scale_ratio)
+    resized_image = cv2.resize(frame, (config['resize_width'], new_height), interpolation=cv2.INTER_LINEAR)
+
+    # 2. Renk Filtreleme
+    hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, config['hsv_lower'], config['hsv_upper'])
+
+    # 3. Gürültü Temizleme (Opening)
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # 4. Konturları Bul
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     detected_centers = []
-    for cnt in contours:
-        if cv2.contourArea(cnt) > min_contour_area:
-            M = cv2.moments(cnt)
-            if M["m00"] != 0:
-                cX = int(M["m10"] / M["m00"])
-                cY = int(M["m01"] / M["m00"])
-                detected_centers.append((cX, cY))
+    if len(contours) > 0:
+        # 5. GÜVENİLİRLİK ARTIŞI: Konturları Alana Göre Sırala
+        sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+        
+        # Sadece en büyük N tanesini analiz et
+        for contour in sorted_contours[:config['top_n_contours']]:
+            if cv2.contourArea(contour) < config['min_contour_area']:
+                break
+
+            # 6. Hafif Şekil Analizi (Doluluk Oranı)
+            hull = cv2.convexHull(contour)
+            if cv2.contourArea(hull) > 0:
+                solidity = float(cv2.contourArea(contour)) / cv2.contourArea(hull)
+                
+                if solidity > 0.85: # Düzgün şekilli hedefleri filtrele
+                    x, y, w, h = cv2.boundingRect(contour)
+                    
+                    # Orijinal görüntüdeki merkez koordinatlarını hesapla
+                    orig_cX = int((x + w / 2) * scale_ratio)
+                    orig_cY = int((y + h / 2) * scale_ratio)
+                    
+                    detected_centers.append((orig_cX, orig_cY))
+    
     return detected_centers
 
-def calculate_target_gps(frame_shape: tuple, target_pixel: tuple, telemetry: Dict[str, Any]) -> tuple | None:
+def calculate_target_gps(frame_shape: tuple, target_pixel: tuple, telemetry: Dict[str, Any], config: Dict[str, Any]) -> Optional[tuple]:
     """Hedefin GPS koordinatlarını, dron telemetrisi ve kamera açısından yola çıkarak hesaplar."""
     drone_alt = telemetry.get('alt', 0)
-    if drone_alt <= 0.5: # Yere çok yakınken hesaplama yapma
-        return None
+    if drone_alt <= 0.5: return None
 
     frame_height, frame_width = frame_shape[:2]
     dx = target_pixel[0] - frame_width / 2
     dy = frame_height / 2 - target_pixel[1]
 
-    # Kamera FOV değerlerini telemetriden al
-    camera_fov_h = telemetry.get('camera_fov_h', 60.0)
-    camera_fov_v = telemetry.get('camera_fov_v', 45.0)
-
-    angle_offset_yaw = (dx / (frame_width / 2)) * (camera_fov_h / 2)
-    angle_offset_pitch = (dy / (frame_height / 2)) * (camera_fov_v / 2)
+    angle_offset_yaw = (dx / (frame_width / 2)) * (config['camera_fov_h'] / 2)
+    angle_offset_pitch = (dy / (frame_height / 2)) * (config['camera_fov_v'] / 2)
     
     total_target_yaw_deg = telemetry.get('yaw', 0) + angle_offset_yaw
-    
-    # Kameranın toplam eğim açısı (pitch), dronun kendi eğimi ve kameranın gövdeye göre sabit eğiminin toplamıdır.
     total_camera_pitch = telemetry.get('pitch', 0) + telemetry.get('camera_fixed_pitch', 0)
     depression_angle_deg = -(total_camera_pitch + angle_offset_pitch)
 
-    if depression_angle_deg <= 1.0: # Yere paralel veya yukarı bakıyorsa hesaplama yapma
-        return None
+    if depression_angle_deg <= 1.0: return None
     
     ground_distance = drone_alt / math.tan(math.radians(depression_angle_deg))
     
-    R = 6378137.0  # Dünya yarıçapı (metre)
+    R = 6378137.0
     dn = ground_distance * math.cos(math.radians(total_target_yaw_deg))
     de = ground_distance * math.sin(math.radians(total_target_yaw_deg))
     
     current_lat_rad = math.radians(telemetry.get('lat', 0))
-    
     dLat = dn / R
     dLon = de / (R * math.cos(current_lat_rad))
     
@@ -158,85 +175,82 @@ def calculate_target_gps(frame_shape: tuple, target_pixel: tuple, telemetry: Dic
 
 # --- Ana Operasyon Sınıfı ---
 class OperationColorTracker:
-    def __init__(self, mav_handler, output_queue: Queue, id: Any, params: Dict[str, Any], logger: logging.Logger):
-        """
-        Renk takibi operasyonunu yöneten sınıf.
-
-        Args:
-            mav_handler: Köprünün mevcut MAVLinkHandlerCopter nesnesi.
-            output_queue: Sonuçların gönderileceği thread-safe kuyruk.
-            params (dict): Sunucudan gelen, operasyona özel parametreler.
-            logger: Kayıt tutmak için logger nesnesi.
-        """
+    def __init__(self, mav_handler, output_queue: Queue, params: Dict[str, Any], logger: logging.Logger):
         self.mav_handler = mav_handler
         self.output_queue = output_queue
-        self.id = id
-        self.params = params
         self.logger = logger
         self.is_running = False
-        self.thread = None
+        self.thread: Optional[threading.Thread] = None
 
-        # Parametreleri al, yoksa varsayılan değerleri kullan
-        self.pipeline = self.params.get("gstreamer_pipeline", "udpsrc port=5600 ! application/x-rtp,payload=96 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink")
-        self.hsv_lower = np.array(self.params.get("hsv_lower_bound", [20, 100, 100]))
-        self.hsv_upper = np.array(self.params.get("hsv_upper_bound", [30, 255, 255]))
-        self.min_contour_area = self.params.get("min_contour_area", 250)
-        
-        self.target_manager = TargetManager(
-            output_queue=self.output_queue,
-            op_id=self.id,
-            confirmation_frames=self.params.get("confirmation_frames", 10),
-            pixel_threshold=self.params.get("pixel_distance_threshold", 100),
-            unseen_threshold=self.params.get("unseen_frames_threshold", 50)
-        )
+        # Sunucudan gelen parametreleri ve operation_01.py'deki varsayılanları birleştir
+        self.config = {
+            'gstreamer_pipeline': params.get('gstreamer_pipeline', 0), # 0: default camera
+            'camera_fov_h': params.get('camera_fov_h', 58.5),
+            'camera_fov_v': params.get('camera_fov_v', 58.5),
+            'resize_width': params.get('resize_width', 320),
+            'top_n_contours': params.get('top_n_contours', 10),
+            'min_contour_area': params.get('min_contour_area', 25),
+            'hsv_lower': np.array(params.get('hsv_lower_bound', [90, 50, 40])),
+            'hsv_upper': np.array(params.get('hsv_upper_bound', [115, 255, 255])),
+            'confirmation_frames': params.get('confirmation_frames', 20),
+            'pixel_threshold': params.get('pixel_threshold', 100),
+            'unseen_threshold': params.get('unseen_threshold', 50),
+        }
+
+        self.target_manager = TargetManager(self.output_queue, self.config)
 
     def start(self) -> bool:
         """Operasyonu ayrı bir iş parçacığında (thread) başlatır."""
         if self.is_running:
-            self.logger.warning("Color Tracker operation is already running.")
+            self.logger.warning("Color Tracker (Optimized) operation is already running.")
             return False
         self.is_running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
-        self.logger.info("Color Tracker operation started.")
+        self.logger.info("Color Tracker (Optimized) operation started.")
         return True
 
     def stop(self):
         """Çalışan operasyon thread'ini durdurur."""
-        if not self.is_running:
-            self.logger.warning("Attempted to stop an operation that is not running.")
-            return
+        if not self.is_running: return
         self.is_running = False
-        if self.thread:
-            # Thread'in sonlanmasını bekle (timeout ile)
-            self.thread.join(timeout=5.0)
-            if self.thread.is_alive():
-                self.logger.error("Color Tracker thread did not terminate gracefully.")
-        self.logger.info("Color Tracker operation stopped.")
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        self.logger.info("Color Tracker (Optimized) operation stopped.")
 
     def _run_loop(self):
         """Ana operasyon döngüsü. Görüntüyü alır, işler ve hedefleri bulur."""
-        cap = cv2.VideoCapture(self.pipeline, cv2.CAP_GSTREAMER)
+        video_source = self.config['gstreamer_pipeline']
+        
+        # Video kaynağının GStreamer olup olmadığını kontrol et
+        if isinstance(video_source, str) and '!' in video_source:
+             cap = cv2.VideoCapture(video_source, cv2.CAP_GSTREAMER)
+        else:
+             # Sayısal index veya dosya yolu için normal VideoCapture kullan
+             try: video_source = int(video_source)
+             except (ValueError, TypeError): pass
+             cap = cv2.VideoCapture(video_source)
+
         if not cap.isOpened():
-            self.logger.error(f"FATAL: Could not open video stream! Pipeline: {self.pipeline}")
+            self.logger.error(f"KRİTİK: Görüntü kaynağı açılamadı! Kaynak: {video_source}")
             self.is_running = False
             return
 
-        self.logger.info("Video stream capture started for color tracking operation.")
+        self.logger.info(f"Görüntü akışı başlatıldı: {video_source}")
         while self.is_running:
             ret, frame = cap.read()
             if not ret:
-                time.sleep(0.1) # Kameradan görüntü gelmiyorsa bekle
+                time.sleep(0.1)
                 continue
             
-            # Gerekli telemetri verilerini MAVLink handler'dan anlık olarak al
             mav_telemetry = self.mav_handler.get_telemetry_snapshot()
+            # Kamera FOV değerlerini MAVLink'ten gelenle birleştir (varsa)
+            mav_telemetry.update(self.config)
 
-            detections = detect_all_color_targets(frame, self.hsv_lower, self.hsv_upper, self.min_contour_area)
+            detections = detect_all_color_targets(frame, self.config)
             self.target_manager.update(detections, mav_telemetry, frame.shape)
             
-            # CPU kullanımını dengelemek için kısa bir bekleme
             time.sleep(0.02)
 
         cap.release()
-        self.logger.info("Video capture released for color tracking operation.")
+        self.logger.info("Görüntü yakalama serbest bırakıldı.")
