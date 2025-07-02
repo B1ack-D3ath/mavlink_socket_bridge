@@ -73,7 +73,6 @@ class TargetManager:
             
             if not target.is_reported and target.confirmation_counter >= self.config['confirmation_frames']:
                 lat, lon = target.gps_coords
-                # Sonucu seri port yerine output_queue'ya koy
                 report = {
                     "type": "target_detected",
                     "operation_type": "color_tracker",
@@ -98,41 +97,34 @@ def detect_all_color_targets(frame: np.ndarray, config: Dict[str, Any]) -> list:
     original_height, original_width = frame.shape[:2]
     if original_width == 0: return []
     
-    # 1. PERFORMANS ARTIŞI: Görüntüyü Küçültme
     scale_ratio = original_width / config['resize_width']
     new_height = int(original_height / scale_ratio)
     resized_image = cv2.resize(frame, (config['resize_width'], new_height), interpolation=cv2.INTER_LINEAR)
 
-    # 2. Renk Filtreleme
     hsv = cv2.cvtColor(resized_image, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, config['hsv_lower'], config['hsv_upper'])
 
-    # 3. Gürültü Temizleme (Opening)
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    # 4. Konturları Bul
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     detected_centers = []
     if len(contours) > 0:
-        # 5. GÜVENİLİRLİK ARTIŞI: Konturları Alana Göre Sırala
         sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
         
-        # Sadece en büyük N tanesini analiz et
         for contour in sorted_contours[:config['top_n_contours']]:
             if cv2.contourArea(contour) < config['min_contour_area']:
                 break
 
-            # 6. Hafif Şekil Analizi (Doluluk Oranı)
             hull = cv2.convexHull(contour)
             if cv2.contourArea(hull) > 0:
                 solidity = float(cv2.contourArea(contour)) / cv2.contourArea(hull)
                 
-                if solidity > 0.85: # Düzgün şekilli hedefleri filtrele
+                # YENİ: Solidity kontrolü artık yapılandırma dosyasından geliyor
+                if solidity > config['solidity']:
                     x, y, w, h = cv2.boundingRect(contour)
                     
-                    # Orijinal görüntüdeki merkez koordinatlarını hesapla
                     orig_cX = int((x + w / 2) * scale_ratio)
                     orig_cY = int((y + h / 2) * scale_ratio)
                     
@@ -184,12 +176,13 @@ class OperationColorTracker:
 
         # Sunucudan gelen parametreleri ve operation_01.py'deki varsayılanları birleştir
         self.config = {
-            'gstreamer_pipeline': params.get('gstreamer_pipeline', 0), # 0: default camera
+            'gstreamer_pipeline': params.get('gstreamer_pipeline', 0),
             'camera_fov_h': params.get('camera_fov_h', 58.5),
             'camera_fov_v': params.get('camera_fov_v', 58.5),
             'resize_width': params.get('resize_width', 320),
             'top_n_contours': params.get('top_n_contours', 10),
             'min_contour_area': params.get('min_contour_area', 25),
+            'solidity': params.get('solidity', 0.85), # YENİ: Solidity parametresi eklendi
             'hsv_lower': np.array(params.get('hsv_lower_bound', [90, 50, 40])),
             'hsv_upper': np.array(params.get('hsv_upper_bound', [115, 255, 255])),
             'confirmation_frames': params.get('confirmation_frames', 20),
@@ -222,11 +215,9 @@ class OperationColorTracker:
         """Ana operasyon döngüsü. Görüntüyü alır, işler ve hedefleri bulur."""
         video_source = self.config['gstreamer_pipeline']
         
-        # Video kaynağının GStreamer olup olmadığını kontrol et
         if isinstance(video_source, str) and '!' in video_source:
              cap = cv2.VideoCapture(video_source, cv2.CAP_GSTREAMER)
         else:
-             # Sayısal index veya dosya yolu için normal VideoCapture kullan
              try: video_source = int(video_source)
              except (ValueError, TypeError): pass
              cap = cv2.VideoCapture(video_source)
@@ -244,7 +235,6 @@ class OperationColorTracker:
                 continue
             
             mav_telemetry = self.mav_handler.get_telemetry_snapshot()
-            # Kamera FOV değerlerini MAVLink'ten gelenle birleştir (varsa)
             mav_telemetry.update(self.config)
 
             detections = detect_all_color_targets(frame, self.config)
